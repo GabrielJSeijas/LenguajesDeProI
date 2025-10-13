@@ -1,0 +1,1 @@
+Hola, Para ver el coverage de las pruebas unitarias de buddy_allocator.go y block.go, basta con escribir: 'go tool cover -html=coverage' una de las herramientas que nos da el Lenguaje Go, el coverage fue creado en la terminal de la raiz con 'go test -v -coverprofile=coverage.

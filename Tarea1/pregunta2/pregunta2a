@@ -1,0 +1,31 @@
+ carnet 19-00036
+ X=0, Y=3, Z=6
+ int a = 3 + 6 + 1, b = 0 + 3 + 1, c = 6 + 3 + 1;
+ sub R (int b) {
+ a := b + c- 1
+ }
+ sub Q (int a, sub r) {
+ b := a + 1
+ r(c)
+ }
+ sub P(int a, sub s, sub t) {
+ sub R(int a) {
+ b := c + a + 1
+ }
+ sub Q (int b, sub r) {
+ c := a + b
+ r(c + a)
+ t(c + b)
+ }
+ int c := a + b
+ if (a < 2 * (Y + Z + 1)) {
+ P(a + 2 * (Y + Z + 1), s, R)
+ } else {
+ int a := c + 1
+ s(c * a, R)
+ Q(c * b, t)
+ }
+ print(a, b, c)
+ }
+ P(a, Q, R);
+ print(a, b, c)
