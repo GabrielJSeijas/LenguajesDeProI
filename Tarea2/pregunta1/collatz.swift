@@ -25,7 +25,7 @@ func calculateCollatzCount(n: Int) -> Int {
     }
     
     //Devolvemos el total de pasos
-    return count
+    return contador 
 }
 
 // Ejemplo de uso (n = 42)
