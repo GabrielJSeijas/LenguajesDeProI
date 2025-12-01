@@ -1,8 +1,14 @@
 #include "TypeManager.h"
 
-// --- 2. Implementación de los Comandos de Definición ---
+
+// Implementación de TypeManager:
+// - Comandos para definir tipos (ATOMIC, STRUCT, UNION).
+// - Cálculos de tamaño y alineación según tres estrategias.
+// - Comando DESCRIBIR para mostrar información y comparativas.
 
 void TypeManager::execute_atomic(const std::string& name, size_t representation, size_t alignment) {
+    // Define un tipo atómico: guardamos su nombre, tamaño y alineación.
+    // Los tipos atómicos no tienen composición.
     defined_types[name] = {
         name,
         representation,
@@ -10,23 +16,32 @@ void TypeManager::execute_atomic(const std::string& name, size_t representation,
         {},
         "ATOMIC"
     };
+
     std::cout << "Tipo ATOMICO '" << name << "' definido (Tamaño: " << representation << ", Alineación: " << alignment << ").\n";
 }
 
 void TypeManager::execute_struct(const std::string& name, const std::vector<std::string>& types) {
+    // Define un tipo STRUCT: aquí solo almacenamos la composición.
+    // El tamaño y alineación reales se calculan cuando se describe el tipo,
+    // porque pueden depender de tipos anidados y de la estrategia elegida.
+
     defined_types[name] = {
         name,
-        0, // El tamaño se calculará al describirlo
-        0, // La alineación se calculará al describirlo
+        0,
+        0,
         types,
         "STRUCT"
     };
     std::cout << "Tipo STRUCT '" << name << "' definido.\n";
+
 }
 
-void TypeManager::execute_union(const std::string& name, const std::vector<std::string>& types) {
+void TypeManager::execute_union(const std::string& name,const std::vector<std::string>& types) {
+    // Define un tipo UNION: el tamaño es el máximo de los tamaños de sus componentes,
+    // y la alineación requerida es la máxima alineación entre ellos.
+    // Además ajustamos el tamaño final para que sea múltiplo de la alineación (padding al final).
     size_t max_size = 0;
-    size_t max_alignment = 0;
+    size_t max_alignment = 0 ;
 
     for (const auto& type_name : types) {
         const auto& component = find_type(type_name);
@@ -34,9 +49,8 @@ void TypeManager::execute_union(const std::string& name, const std::vector<std::
         max_alignment = std::max(max_alignment, component.alignment);
     }
     
-    // El tamaño final de UNION debe ser un múltiplo de su alineación máxima (padding al final)
     size_t final_size = align_up(max_size, max_alignment);
-    size_t wasted_bytes = final_size - max_size; // Padding al final
+    size_t wasted_bytes = final_size - max_size; // padding final
 
     defined_types[name] = {
         name,
@@ -48,26 +62,40 @@ void TypeManager::execute_union(const std::string& name, const std::vector<std::
     std::cout << "Tipo UNION '" << name << "' definido (Tamaño: " << final_size << ", Alineación: " << max_alignment << ").\n";
 }
 
-// --- 3. Funciones de Cálculo de Estrategias ---
+// Estrategias de cálculo de tamaño y alineación
 
-// a) Sin Empaquetar (Estándar: Padding en campos + Padding final)
+// Sin empaquetar:
+// Calcula como lo haría el compilador por defecto: respeta la alineación de cada campo,
+// añade padding interno antes de cada campo según su alineación, y padding final
+// para que el tamaño total sea múltiplo de la máxima alineación del struct.
 TypeManager::Result TypeManager::calculate_no_packing(const TypeDefinition& struct_type) {
     size_t current_offset = 0;
     size_t max_alignment = 0;
     size_t padding_internal = 0;
 
     for (const auto& type_name : struct_type.composition) {
-        const auto& component = find_type(type_name);
-        max_alignment = std::max(max_alignment, component.alignment);
+        const auto& component_definition = find_type(type_name);
         
-        // Calcular padding antes de este campo para alinearlo
-        size_t next_offset = align_up(current_offset, component.alignment);
+        size_t current_size = component_definition.size;
+        size_t current_align = component_definition.alignment;
+
+        // Manejar STRUCTs anidados recursivamente 
+        if (component_definition.type_class == "STRUCT") {
+            // Si es un STRUCT anidado, calculamos su tamaño y alineación no-empaquetados.
+            Result res_nested = calculate_no_packing(component_definition);
+            current_size = res_nested.size;
+            current_align = res_nested.alignment;
+            //
+        }
+
+        max_alignment = std::max(max_alignment, current_align);
+        
+        size_t next_offset = align_up(current_offset, current_align);
         padding_internal += (next_offset - current_offset);
         
-        current_offset = next_offset + component.size;
+        current_offset = next_offset + current_size;
     }
 
-    // Padding final: El tamaño total debe ser múltiplo de la alineación máxima
     size_t final_size = align_up(current_offset, max_alignment);
     size_t padding_final = final_size - current_offset;
 
@@ -77,8 +105,10 @@ TypeManager::Result TypeManager::calculate_no_packing(const TypeDefinition& stru
         padding_internal + padding_final
     };
 }
-
-// b) Empaquetado (Packed: Sin padding, solo suma)
+// Empaquetado (packed):
+// Suma estricta de los tamaños de los campos sin introducir padding.
+// Si un componente es un STRUCT anidado, su tamaño empaquetado se obtiene recursivamente.
+// Esto refleja la situación donde se fuerza packed y los structs anidados también se consideran sin padding.
 TypeManager::Result TypeManager::calculate_packed(const TypeDefinition& struct_type) {
     size_t total_size = 0;
     size_t max_alignment = 0;
@@ -88,11 +118,8 @@ TypeManager::Result TypeManager::calculate_packed(const TypeDefinition& struct_t
         
         size_t current_size = component.size;
 
-        // Si el componente es un STRUCT, su tamaño empaquetado debe calcularse recursivamente.
         if (component.type_class == "STRUCT") {
-            // El tamaño empaquetado de un STRUCT anidado es la suma estricta de sus propios campos.
-            // Es necesario llamar a calculate_packed recursivamente para este componente anidado.
-            // Esto asegura que Pair, que es un STRUCT, se calcule como 6 bytes (4+2), NO 8.
+            // ParaSTRUCT anidado, obtenemos su tamaño usando la estrategia packed recursiva.
             current_size = calculate_packed(component).size;
         }
 
@@ -100,19 +127,19 @@ TypeManager::Result TypeManager::calculate_packed(const TypeDefinition& struct_t
         max_alignment = std::max(max_alignment, component.alignment);
     }
     
-    // ...
     return {
-        total_size, // Ahora será 6 (Pair) + 1 (char) + 16 (byte_16) = 23 bytes
+        total_size,
         max_alignment,
         0
     };
 }
 
-// c) Reordenando (Optimal: Ordenar por alineación descendente)
+// Reordenando (optimo):
+// Ordenamos los campos por alineación descendente y aplicamos la lógica de "sin empaquetar"
+// sobre ese orden. La idea es minimizar padding interno colocando primero los campos
+// de mayor alineación.
 TypeManager::Result TypeManager::calculate_optimal_packing(const TypeDefinition& struct_type) {
-    // 1. Obtener y preparar los tipos componentes con sus ALINEACIONES REALES
-    // Usamos pair<size_t, size_t> para almacenar {Alignment, Size} para la clasificación
-    // Almacenamos alineación primero porque es la clave de clasificación.
+    // Recolectamos pares {alineación, tamaño} para poder ordenar por alineación.
     std::vector<std::pair<size_t, size_t>> components_info;
 
     for (const auto& type_name : struct_type.composition) {
@@ -121,43 +148,36 @@ TypeManager::Result TypeManager::calculate_optimal_packing(const TypeDefinition&
         size_t current_size = defined_type.size;
         size_t current_align = defined_type.alignment;
 
-        // Si el componente es un STRUCT anidado, debemos calcular su tamaño "no empaquetado"
+        // Para STRUCT anidado usamos su tamaño y alineación bajo la estrategia "no packing"
+        // porque al reordenar queremos las propiedades reales de memoria de ese componente.
         if (defined_type.type_class == "STRUCT") {
             Result res = calculate_no_packing(defined_type);
             current_size = res.size;
             current_align = res.alignment;
         }
 
-        // Corregido: Inicializa std::pair con current_align y current_size
         components_info.push_back({current_align, current_size});
     }
 
-    // 2. Ordenar por ALINEACIÓN DESCENDENTE (heurística óptima)
     std::sort(components_info.begin(), components_info.end(), 
         [](const auto& a, const auto& b) {
-            // El primer elemento del pair (a.first) es la alineación
             return a.first > b.first;
         });
 
-    // 3. Aplicar el cálculo de NO PACKING al ordenado
     size_t current_offset = 0;
     size_t max_alignment = 0;
     size_t padding_internal = 0;
 
     for (const auto& component : components_info) {
-        // El primer elemento del pair (component.first) es la alineación
         max_alignment = std::max(max_alignment, component.first);
         
-        // Calcular padding antes de este campo para alinearlo
-        size_t component_alignment = component.first;// Corregido: Usa la alineación del pair
+        size_t component_alignment = component.first;
         size_t next_offset = align_up(current_offset, component_alignment);
         padding_internal += (next_offset - current_offset);
         
-        // El segundo elemento del pair (component.second) es el tamaño
         current_offset = next_offset + component.second;
     }
 
-    // Padding final
     size_t final_size = align_up(current_offset, max_alignment);
     size_t padding_final = final_size - current_offset;
 
@@ -168,7 +188,8 @@ TypeManager::Result TypeManager::calculate_optimal_packing(const TypeDefinition&
     };
 }
 
-// Utilidad para imprimir resultados
+// Imprime los resultados de una estrategia de cálculo de tamaño/alineación.
+// Uso para comparar las tres estrategias cuando se describe un STRUCT.
 void TypeManager::print_result(const std::string& strategy, const Result& res) {
     std::cout << "  - Estrategia " << strategy << ":\n";
     std::cout << "    * Tamaño Total: " << res.size << " bytes\n";
@@ -176,7 +197,11 @@ void TypeManager::print_result(const std::string& strategy, const Result& res) {
     std::cout << "    * Bytes Desperdiciados (Padding): " << res.wasted << " bytes\n";
 }
 
-// Comando DESCRIBIR
+// Comando DESCRIBIR:
+// Muestra la información detallada de un tipo definido.
+// - Para ATOMIC muestra tamaño y alineación.
+// - Para UNION muestra tamaño, alineación y padding final.
+// - Para STRUCT calcula y muestra las tres estrategias (no packing, packed, reordenando).
 void TypeManager::execute_describe(const std::string& name) {
     try {
         const auto& type = find_type(name);
@@ -190,24 +215,21 @@ void TypeManager::execute_describe(const std::string& name) {
         } else if (type.type_class == "UNION") {
             std::cout << "  * Tamaño: " << type.size << " bytes\n";
             std::cout << "  * Alineacion: " << type.alignment << " bytes\n";
-            // Para la unión, el desperdicio es el padding final
             size_t max_size_component = 0;
             for (const auto& comp_name : type.composition) {
                 max_size_component = std::max(max_size_component, find_type(comp_name).size);
             }
             std::cout << "  * Bytes Desperdiciados: " << (type.size - max_size_component) << " (padding final)\n";
         } else if (type.type_class == "STRUCT") {
-            // Sin empaquetar
+            // Calculamos las tres estrategias y las imprimimos para comparar.
             Result res_no_packing = calculate_no_packing(type);
-            print_result("Sin empaquetar", res_no_packing); // [cite: 65]
+            print_result("Sin empaquetar", res_no_packing);
 
-            // Empaquetado
             Result res_packed = calculate_packed(type);
-            print_result("Empaquetado", res_packed); // [cite: 66]
+            print_result("Empaquetado", res_packed);
 
-            // Reordenando
             Result res_optimal = calculate_optimal_packing(type);
-            print_result("Reordenando de manera optima", res_optimal); // [cite: 67]
+            print_result("Reordenando de manera optima", res_optimal);
         }
         std::cout << "---------------------------------------\n";
 
